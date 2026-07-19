@@ -1,9 +1,10 @@
 # Syriac Variant Classification Pipeline
 
-Six scripts, covering the full path from a raw NoSketchEngine `.vert` corpus
-to a small, well-characterized set of word-spelling clusters that genuinely
-need human linguistic review — plus the naive baseline standardizer they
-were built to improve on.
+Seven scripts, covering the full path from a raw NoSketchEngine `.vert`
+corpus to a small, well-characterized set of word-spelling clusters that
+genuinely need human linguistic review — plus both a naive baseline
+standardizer and a risk-aware standardizer that consults the classification
+pipeline's findings before rewriting anything.
 
 The core problem: Sureth (Northeastern Neo-Aramaic) is written with a
 heavily vocalized Syriac abjad, so the same word can surface as many
@@ -19,8 +20,10 @@ pronominal suffixes, negation, numerals) where different tense/person/gender
 forms happen to share a consonantal skeleton. The four classification
 scripts (`variant_insights.py` onward) find that slice, explain as much of
 it as possible against known grammar and lexicon, and leave a much smaller,
-well-characterized set for a human to review — without touching the
-original corpus or the naive standardizer's output.
+well-characterized set for a human to review.
+`standardize_syriac_v2.py` closes the loop: it consumes those
+classification results directly and makes a per-cluster, audited merge/skip
+decision instead of merging everything uniformly the way Stage B does.
 
 If you want the reasoning and results written up in full, see
 `suret_pulse_variant_classification_paper.docx` in this same output set —
@@ -34,65 +37,73 @@ raw_corpus.vert  (NoSketchEngine format)
         ▼
 analyze_syriac_variants.py        ── Stage A: find duplicate clusters
         │  produces: <corpus>_analysis.json
-        ├──────────────────────────────────────────────┐
-        ▼                                               ▼
-standardize_syriac.py              variant_insights.py       ── Pass 0: dominance
-── Stage B (naive baseline):            │                        scoring + tiering
-   frequency-canonicalize                │  produces:
-   everything, no risk                   │  flagged_for_manual_review.json
-   awareness                             ▼  (MANUAL tier only)
-                                 grammar_crossref.py            ── Pass 1: grammatical
-                                         │  produces:                paradigm matching
-                                         │  manual_review_annotated.json
-                                         ▼
-                                 lexical_subclass.py             ── Pass 2: lexical/
-                                         │  produces:                  phonetic matching
-                                         │  manual_review_final.json
-                                         ▼
-                                 name_and_feminine_subclass.py   ── Pass 3: proper-noun
-                                         │  produces:                  + feminine-noun tier
-                                         │  manual_review_final2.json
-                                         ▼
-                                 [ your review workflow / a future
-                                   risk-aware standardize_syriac.py v2 ]
+        ├───────────────────────────┬────────────────────────────────────┐
+        ▼                           ▼                                    │
+standardize_syriac.py      variant_insights.py       ── Pass 0: dominance │
+── Stage B (naive baseline):    │                        scoring + tiering│
+   frequency-canonicalize        │  produces:                            │
+   everything, no risk           │  flagged_for_manual_review.json       │
+   awareness                     ▼  (MANUAL tier only)                  │
+                          grammar_crossref.py            ── Pass 1       │
+                                  │  produces:                            │
+                                  │  manual_review_annotated.json         │
+                                  ▼                                       │
+                          lexical_subclass.py             ── Pass 2       │
+                                  │  produces:                            │
+                                  │  manual_review_final.json             │
+                                  ▼                                       │
+                          name_and_feminine_subclass.py   ── Pass 3       │
+                                  │  produces:                            │
+                                  │  manual_review_final2.json            │
+                                  ▼                                       │
+                          standardize_syriac_v2.py  ◄─────────────────────┘
+                          ── Stage C (risk-aware standardizer): reads
+                             BOTH the Stage A analysis JSON and the Pass 3
+                             output, merges what's safe, skips what isn't,
+                             and writes a full per-cluster decision log
 ```
 
-`analyze_syriac_variants.py` is the shared starting point for **both**
-branches: the naive baseline (`standardize_syriac.py`, Stage B) and the
-risk-aware classification pipeline (Passes 0–3). They are alternatives, not
-a sequence — `standardize_syriac.py` does not consume anything the
-classification passes produce, and vice versa. The classification passes
-exist to show *where* Stage B's assumption (most-frequent-form =
-correct-form) breaks down, and to produce a smaller, annotated set of
-clusters for either manual correction or a future smarter standardizer.
+`analyze_syriac_variants.py` is the shared starting point for every other
+script. `standardize_syriac.py` (Stage B) and the classification pipeline
+(Passes 0–3) are independent, parallel consumers of its output — Stage B
+does not need the classification results, and Passes 0–3 do not need Stage
+B's output. `standardize_syriac_v2.py` (Stage C) is the one script that
+depends on *everything* upstream: it re-derives the same tiering as
+`variant_insights.py` and reads Pass 3's category annotations to decide,
+cluster by cluster, whether Stage B's "always merge" behavior is actually
+appropriate.
 
-Each script from `variant_insights.py` onward is a **filter over the
-previous script's output**: it only touches clusters that are still
-unclassified and leaves everything already tagged alone. This means you can
-re-run any later script after editing its rules without re-running the
-earlier ones, and you can insert new passes anywhere in the chain by
-following the same pattern (read the previous JSON, skip anything already
-classified, tag the rest, write a new JSON).
+Each script from `variant_insights.py` through `name_and_feminine_subclass.py`
+is a **filter over the previous script's output**: it only touches clusters
+that are still unclassified and leaves everything already tagged alone. This
+means you can re-run any later script after editing its rules without
+re-running the earlier ones, and you can insert new passes anywhere in the
+chain by following the same pattern (read the previous JSON, skip anything
+already classified, tag the rest, write a new JSON).
 
-**Important:** none of the four classification scripts modify
-`standardize_syriac.py`'s output or the underlying `.vert` corpus. They only
-annotate the *report* of duplicate clusters. Turning the annotations into an
-actual updated standardization pass (i.e., a `standardize_syriac.py` v2 that
-uses tier/category information instead of pure frequency) is listed as
-future work in the paper and is not yet implemented.
+**Important:** `standardize_syriac.py` (Stage B) and `standardize_syriac_v2.py`
+(Stage C) are two independent, complete standardizers — running one does
+not require or affect the other, and neither modifies the original `.vert`
+corpus (each writes its own new standardized copy). Stage C is the
+risk-aware standardizer previously described in this README as future work;
+it is now implemented (see Script C below) and is the recommended
+standardizer to use going forward, with Stage B kept around as the naive
+baseline for comparison.
 
 ---
 
 ## Prerequisites
 
-- Python 3.6+, standard library only for all six scripts (no `pip install`
+- Python 3.6+, standard library only for all seven scripts (no `pip install`
   needed for any of them).
 - `matplotlib` only if you use `variant_insights.py --chart` (`pip install
   matplotlib --break-system-packages` if missing).
 - A `.vert`-format corpus is the true starting point (see Script A below for
   the format). Everything downstream of Script A works off the JSON it
-  produces — no script in this pipeline needs the original corpus file again
-  except Script A itself and Script B (the naive standardizer).
+  produces — no script in this pipeline needs to re-read the original
+  corpus file except Script A itself (which only reads it), and Script B
+  and Script C (the naive and risk-aware standardizers), which are the only
+  two scripts that write out a new, rewritten corpus.
 
 ---
 
@@ -458,6 +469,143 @@ guaranteed to be mere pronunciation differences — treat both categories as
 
 ---
 
+## C. `standardize_syriac_v2.py` — risk-aware standardizer
+
+**Purpose:** the risk-aware successor to `standardize_syriac.py`. Instead of
+canonicalizing every cluster to its most frequent form unconditionally, it
+re-derives each cluster's merge-safety tier (the same logic as
+`variant_insights.py`) and, for MANUAL-tier clusters, looks up the
+grammatical/lexical/name category assigned by Passes 1–3 to decide whether
+merging is appropriate — then writes out both the standardized corpus *and*
+a full per-cluster decision log explaining every merge and every skip.
+
+**Inputs:**
+1. `--input` — the original `.vert` corpus (same file `analyze_syriac_variants.py`
+   was run on).
+2. `--analysis` — the `analyze_syriac_variants.py` output JSON (Script A).
+   Required: this is what lets the script recompute dominance/tier for
+   *every* cluster, not just the MANUAL-tier ones.
+3. `--manual-review` — the final classification output (`manual_review_final2.json`
+   from Pass 3, or any earlier pass's output if you want to stop partway
+   through the classification pipeline). **Optional** — if omitted, every
+   MANUAL-tier cluster is treated as if no category had been matched (see
+   the policy table below), which is the conservative fallback.
+
+**Outputs:**
+1. **Standardized `.vert` file** (`--output`, default
+   `<input_stem>_standardized_v2<ext>`) — same format as Script B's output,
+   but only rewriting the clusters the policy decided were safe to merge.
+2. **Mapping JSON** (`--mapping`, default `<input_stem>_mapping_v2.json`) —
+   same flat `{"variant": "canonical", ...}` format as Script B, but only
+   containing entries for clusters that were actually merged.
+3. **Decision log** (`--decisions`, default `<input_stem>_decisions_v2.json`)
+   — the audit trail: **every** cluster from the analysis JSON (all 51,858
+   on the reference corpus, not just the merged ones), with its tier,
+   dominance, matched category (if any), the merge/skip decision, and a
+   human-readable reason string:
+   ```json
+   {
+     "consonantal_base": "ܗܘܐ",
+     "cluster_frequency": 31623,
+     "dominance": 0.563,
+     "tier": "MANUAL",
+     "category": "copula_or_to_be_paradigm",
+     "decision": "skip",
+     "canonical_form": null,
+     "reason": "MANUAL tier, high-risk category 'copula_or_to_be_paradigm': variants are different grammatical forms, not spelling variants"
+   }
+   ```
+
+**Decision policy** (each stage independently overridable via CLI flag):
+
+| Tier | Category | Default decision | CLI flag |
+|---|---|---|---|
+| SAFE_AUTO | — | **merge** (always) | — |
+| REVIEW | — | merge | `--review-policy {merge,skip}` |
+| MANUAL | `copula_or_to_be_paradigm` or `passive_or_remain_piš` (`HIGH_RISK_CATEGORIES`) | **skip** | `--manual-high-risk-policy {merge,skip}` |
+| MANUAL | any other matched category | merge | `--manual-moderate-policy {merge,skip}` |
+| MANUAL | no category matched (or `--manual-review` omitted) | **skip** | `--manual-unresolved-policy {merge,skip}` |
+
+The reasoning behind the two conservative ("skip") defaults: the two
+high-risk categories are cases where a single consonantal-base cluster
+genuinely contains more than one grammatical word (e.g. `ܗܘܐ`'s past-tense
+and participial forms of "to be") — there is no coherent "canonical form" to
+collapse to, so the safest default is to leave every surface form as-is.
+Unresolved MANUAL-tier clusters are, by definition, cases the heuristic
+pipeline couldn't explain at all — merging them by default would silently
+reintroduce exactly the risk this whole pipeline exists to avoid, so the
+conservative default is also skip. The other MANUAL categories (pronominal
+suffixes, negation, numerals, plural nouns, adjectival/ordinal endings,
+interrogatives, demonstratives, proper nouns, plain feminine nouns) each
+denote a **single** lexical item whose variants are plausible spelling
+differences rather than competing grammatical readings, so merging is the
+default there — but every such merge is still individually logged, since
+"plausible" is not a guarantee.
+
+Kashida (U+0640) is stripped from every token regardless of merge decision
+— that cleanup is orthographically uncontroversial (Section 5.2 of the
+paper: kashida-only clusters are 0.5% of clusters / 0.1% of instances, and
+stripping it never touches a grammatical distinction).
+
+**Usage:**
+```bash
+python standardize_syriac_v2.py \
+    --input corpus.vert \
+    --analysis syriac_variants_analysis.json \
+    --manual-review manual_review_final2.json \
+    --output corpus_standardized_v2.vert \
+    --mapping corpus_mapping_v2.json \
+    --decisions corpus_decisions_v2.json
+```
+Running it on the reference corpus produces, per the printed decision
+summary:
+```
+=== DECISION SUMMARY (clusters) ===
+  SAFE_AUTO   merged= 43165  skipped=     0
+  REVIEW      merged=  6501  skipped=     0
+  MANUAL      merged=   793  skipped=  1399
+```
+i.e. of the 2,192 MANUAL-tier clusters, 793 (the ones matched to a
+non-high-risk category) get merged and 1,399 (high-risk-category matches
+plus the still-unresolved residual) are left untouched in the output
+corpus — exactly the set the paper argues should not be collapsed by
+frequency alone.
+
+**To experiment with looser/stricter policies**, override any of the four
+flags independently, e.g. to also merge the still-unresolved residual
+(accepting more risk in exchange for a cleaner corpus):
+```bash
+python standardize_syriac_v2.py --input corpus.vert --analysis corpus_analysis.json \
+    --manual-review manual_review_final2.json \
+    --manual-unresolved-policy merge
+```
+or to be maximally conservative and skip everything in the MANUAL tier
+regardless of category:
+```bash
+python standardize_syriac_v2.py --input corpus.vert --analysis corpus_analysis.json \
+    --manual-moderate-policy skip
+```
+
+**Relationship to `standardize_syriac.py` (Stage B):** both scripts produce
+a mapping JSON and a rewritten `.vert` file in the same formats, so you can
+diff Stage B's mapping against Stage C's mapping (or against Stage C's full
+decision log) to see exactly which of Stage B's rewrites were judged
+risky and excluded. This is the concrete way to answer "what would the naive
+approach have gotten wrong on my corpus?" for a specific dataset.
+
+**To extend:** the `HIGH_RISK_CATEGORIES` set near the top of the file is
+the main lever — if you add a new grammar-paradigm category to
+`grammar_crossref.py` that has the same "multiple grammatical readings
+share one consonantal base" property as the copula/*piš-* paradigms, add its
+name to this set too so Stage C treats it with the same caution. The
+tiering constants (`SAFE_AUTO_DOMINANCE`, `MANUAL_MIN_FREQUENCY`,
+`MANUAL_MAX_DOMINANCE`, `NOISE_TAIL_MAX_FREQ`) are intentionally duplicated
+from `variant_insights.py` rather than imported, so this script stays
+runnable on its own — if you tune the thresholds in one file, mirror the
+change in the other.
+
+---
+
 ## Cumulative data schema
 
 After running all four scripts, each object in `manual_review_final2.json`
@@ -519,6 +667,16 @@ python lexical_subclass.py \
 python name_and_feminine_subclass.py \
     --input manual_review_final.json \
     --export manual_review_final2.json
+
+# Stage C: risk-aware standardization, using both the Stage A analysis and
+# the finished Pass 3 classification to decide what's actually safe to merge
+python standardize_syriac_v2.py \
+    --input corpus.vert \
+    --analysis syriac_variants_analysis.json \
+    --manual-review manual_review_final2.json \
+    --output corpus_standardized_v2.vert \
+    --mapping corpus_mapping_v2.json \
+    --decisions corpus_decisions_v2.json
 ```
 
 On the reference corpus (2,975,551 tokens / 301,960 types / 51,858
@@ -536,11 +694,13 @@ indication of which of those rewrites are safe. Passes 0–3 instead resolve:
 i.e. 61.3% of the highest-risk tier's token instances now have an
 identified explanation, and the final human-review workload (1,355
 clusters) is about 38x smaller than the original 51,858-cluster candidate
-list. Cross-referencing `corpus_mapping.json` (from Stage B) against
-`manual_review_final2.json`'s tier/category fields will show you exactly
-which of Stage B's rewrites fall into the risky MANUAL tier and are still
-unexplained after all three passes — those are the rewrites most worth
-manually double-checking or reverting.
+list. Stage C then acts on this directly: with its default policy, of the
+2,192 MANUAL-tier clusters it merges the 793 matched to a non-high-risk
+category and leaves the other 1,399 (the two high-risk grammar paradigms,
+plus every still-unresolved cluster) untouched in the output corpus — so
+you no longer need to manually cross-reference Stage B's mapping file
+against the classification results; Stage C's own decision log *is* that
+cross-reference, already made and already justified per cluster.
 
 ---
 
