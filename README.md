@@ -1,344 +1,572 @@
-# Syriac Text Standardization & Variant Analysis
+# Syriac Variant Classification Pipeline
 
-A Python-based toolkit for identifying and standardizing spelling variations in Syriac corpus files (NoSketchEngine `.vert` format). Designed to eliminate duplicate entries caused by inconsistent diacritical marking and formatting artifacts.
+Six scripts, covering the full path from a raw NoSketchEngine `.vert` corpus
+to a small, well-characterized set of word-spelling clusters that genuinely
+need human linguistic review — plus the naive baseline standardizer they
+were built to improve on.
 
-## Overview
+The core problem: Sureth (Northeastern Neo-Aramaic) is written with a
+heavily vocalized Syriac abjad, so the same word can surface as many
+different strings depending on which vowel/stress diacritics were used.
+`analyze_syriac_variants.py` finds these "duplicate" clusters by stripping
+diacritics down to a bare consonantal skeleton and grouping surface forms
+that share one. The obvious next step — canonicalize every cluster to its
+single most frequent surface form (`standardize_syriac.py`, "Strategy 1") —
+silently destroys information for a specific, identifiable, and
+disproportionately high-frequency slice of the corpus: closed-class
+morphology (the NENA copula/"to be" paradigm, the *piš-* passive auxiliary,
+pronominal suffixes, negation, numerals) where different tense/person/gender
+forms happen to share a consonantal skeleton. The four classification
+scripts (`variant_insights.py` onward) find that slice, explain as much of
+it as possible against known grammar and lexicon, and leave a much smaller,
+well-characterized set for a human to review — without touching the
+original corpus or the naive standardizer's output.
 
-### Problem
-NoSketchEngine corpus files often contain variant spellings of the same word due to:
-- **Non-standardized diacritics** - Different vowel marks for the same word
-- **Kashida characters** - Extra spacing characters (U+0640) inserted for text justification
-- **Combining mark placement** - Same marks at different positions
-- **OCR inconsistencies** - Multiple representations of diacritical features
+If you want the reasoning and results written up in full, see
+`suret_pulse_variant_classification_paper.docx` in this same output set —
+this README is the operational/maintenance companion to that paper.
 
-### Solution
-This toolkit implements **Strategy 1: Frequency-Based Canonical Standardization**
+## Where this fits in the larger workflow
 
-Each word's consonantal base (skeleton without diacritics) is identified, and the most frequent variant is selected as the canonical form. All variants are then mapped to this canonical form.
-
-**Results:**
-- Unique words reduced: 301,960 → 196,541 (34.9% reduction)
-- Duplicate clusters eliminated: 51,858 → 0
-- Lines modified: ~12.6% (mostly non-lossy normalization)
-
-## Scripts
-
-### 1. `analyze_syriac_variants.py`
-**Purpose:** Scan a vert file and identify duplicate word clusters
-
-**Usage:**
-```bash
-python analyze_syriac_variants.py --input <corpus.vert> [--output <report.json>]
+```
+raw_corpus.vert  (NoSketchEngine format)
+        │
+        ▼
+analyze_syriac_variants.py        ── Stage A: find duplicate clusters
+        │  produces: <corpus>_analysis.json
+        ├──────────────────────────────────────────────┐
+        ▼                                               ▼
+standardize_syriac.py              variant_insights.py       ── Pass 0: dominance
+── Stage B (naive baseline):            │                        scoring + tiering
+   frequency-canonicalize                │  produces:
+   everything, no risk                   │  flagged_for_manual_review.json
+   awareness                             ▼  (MANUAL tier only)
+                                 grammar_crossref.py            ── Pass 1: grammatical
+                                         │  produces:                paradigm matching
+                                         │  manual_review_annotated.json
+                                         ▼
+                                 lexical_subclass.py             ── Pass 2: lexical/
+                                         │  produces:                  phonetic matching
+                                         │  manual_review_final.json
+                                         ▼
+                                 name_and_feminine_subclass.py   ── Pass 3: proper-noun
+                                         │  produces:                  + feminine-noun tier
+                                         │  manual_review_final2.json
+                                         ▼
+                                 [ your review workflow / a future
+                                   risk-aware standardize_syriac.py v2 ]
 ```
 
-**Example:**
-```bash
-python analyze_syriac_variants.py --input ../corpora_vert_versions/mytext.vert --output mytext_analysis.json
-```
+`analyze_syriac_variants.py` is the shared starting point for **both**
+branches: the naive baseline (`standardize_syriac.py`, Stage B) and the
+risk-aware classification pipeline (Passes 0–3). They are alternatives, not
+a sequence — `standardize_syriac.py` does not consume anything the
+classification passes produce, and vice versa. The classification passes
+exist to show *where* Stage B's assumption (most-frequent-form =
+correct-form) breaks down, and to produce a smaller, annotated set of
+clusters for either manual correction or a future smarter standardizer.
 
-**Output:**
-- JSON report with:
-  - Summary statistics (total unique words, instances, duplicate clusters)
-  - Top duplicate clusters by frequency
-  - Each cluster's consonantal base, variants, and frequencies
+Each script from `variant_insights.py` onward is a **filter over the
+previous script's output**: it only touches clusters that are still
+unclassified and leaves everything already tagged alone. This means you can
+re-run any later script after editing its rules without re-running the
+earlier ones, and you can insert new passes anywhere in the chain by
+following the same pattern (read the previous JSON, skip anything already
+classified, tag the rest, write a new JSON).
 
-**Typical Output:**
-```
-Total unique words: 301,960
-Total word instances: 2,975,551
-Potential duplicate clusters: 51,858
-
-Top 10 duplicate clusters by frequency:
-1. Base: ܡ̣ܢ
-   Cluster freq: 35971, Variants: 12
-     • ܡ̣ܢ (n=35937)
-     • ܡ̣ـܢ (n=13)
-     • ܡ̣ـــܢ (n=4)
-     ...
-```
-
-### 2. `standardize_syriac.py`
-**Purpose:** Standardize a vert file using frequency-based canonical forms
-
-**Usage:**
-```bash
-python standardize_syriac.py <input.vert> [output.vert] [mapping.json]
-```
-
-**Examples:**
-
-Basic usage (auto-generates output filename):
-```bash
-python standardize_syriac.py ../corpora_vert_versions/mytext.vert
-```
-Creates:
-- `../corpora_vert_versions/mytext_standardized.vert`
-- `../corpora_vert_versions/mytext_mapping.json`
-
-With explicit output paths:
-```bash
-python standardize_syriac.py corpus.vert corpus_clean.vert variant_map.json
-```
-
-**Output Files:**
-1. **Standardized vert file** - Same format as input, with normalized Syriac text
-2. **Mapping JSON** - Reference of all variant → canonical conversions (for reproducibility)
-
-**Processing Steps:**
-1. Removes Kashida characters (U+0640) from all Syriac text
-2. For each consonantal base:
-   - Identifies all variants (different diacritics)
-   - Selects most frequent variant as canonical
-   - Creates mapping for all other variants
-3. Applies mapping to output file
-
-## Workflow
-
-### Quick Start (Analysis Only)
-```bash
-# 1. Analyze corpus to see duplicate patterns
-python analyze_syriac_variants.py --input corpus.vert --output analysis.json
-
-# 2. Review report to understand scope of duplication
-# Open analysis.json in a text editor or JSON viewer
-
-# 3. Proceed to standardization if satisfied
-```
-
-### Full Workflow (Analysis + Standardization)
-```bash
-# 1. Analyze original corpus
-python analyze_syriac_variants.py --input corpus.vert --output before_analysis.json
-
-# 2. Standardize corpus
-python standardize_syriac.py corpus.vert corpus_standardized.vert corpus_mapping.json
-
-# 3. Analyze standardized corpus to verify improvements
-python analyze_syriac_variants.py --input corpus_standardized.vert --output after_analysis.json
-
-# 4. Compare results
-# - before_analysis.json should show many duplicate clusters
-# - after_analysis.json should show 0 duplicate clusters
-# - corpus_mapping.json contains the transformations applied
-```
-
-## Technical Details
-
-### Supported Characters
-Scripts handle:
-- **East Syriac vowels** (Pthaha, Gathpha, Rbasa, Hbasa, Esasa, Rwaha, Yudh)
-- **Combining marks** (Feminine dot, Qushshama, Barrekh, etc.)
-- **Arabic-influenced marks** (Fatha, Damma, Kasra, Shadda, Sukun, Maddah, etc.)
-- **Kashida/Tatweel** (text justification character)
-- **Non-Syriac text** (safely skipped)
-
-### Consonantal Base Extraction
-The `get_syriac_base()` function removes:
-- All vowel diacritics
-- All combining marks
-- Kashida characters
-- Extra positioning marks
-
-Example:
-```
-Input:  ܗ݇ܘܵܐ (with vowels and marks)
-Base:   ܗܘܐ (consonantal skeleton)
-```
-
-### Variant Clustering
-Words are grouped by consonantal base. For each group, the variant with the highest frequency in the corpus becomes the canonical form.
-
-Example cluster:
-```
-Base: ܠܐ
-Canonical (most frequent): ܠܵܐ (19,232 instances)
-Variants:
-  - ܠܹܐ (15,414) → mapped to ܠܵܐ
-  - ܠܲܐ (111) → mapped to ܠܵܐ
-  - ܠܐ (62) → mapped to ܠܵܐ
-  ...
-```
-
-### Mapping File Format
-The mapping JSON is straightforward for manual review or reapplication:
-
-```json
-{
-  "ܠܹܐ": "ܠܵܐ",
-  "ܠܲܐ": "ܠܵܐ",
-  "ܠܸܐ": "ܠܵܐ",
-  "ܗܘܵܐ": "ܗ݇ܘܵܐ",
-  "ܗܵܘܹܐ": "ܗ݇ܘܵܐ",
-  ...
-}
-```
-
-## Performance
-
-### Resource Requirements
-- **Memory:** ~200-500 MB for typical corpus files (2-5 million words)
-- **CPU:** Single-threaded Python
-- **I/O:** Disk space for output files (~same size as input)
-
-### Processing Times
-- **Analysis (identify variants):** ~30-60 seconds for 4M+ word corpus
-- **Standardization (apply mapping):** ~60-90 seconds for 4M+ word corpus
-
-### Scalability
-Both scripts process files line-by-line with minimal memory buffering. Safe for very large corpus files.
-
-## Best Practices
-
-### 1. Always Analyze First
-Never standardize without understanding the variant patterns:
-```bash
-python analyze_syriac_variants.py --input corpus.vert --output analysis.json
-```
-Review the JSON report to understand what will change.
-
-### 2. Keep Backups
-Always retain the original corpus file:
-```bash
-# Good practice
-cp corpus.vert corpus_backup.vert
-python standardize_syriac.py corpus.vert corpus_standardized.vert
-```
-
-### 3. Preserve Mapping Files
-The mapping JSON is essential for:
-- Understanding what changed
-- Recreating the standardization later
-- Auditing modifications
-- Applying to related corpus files
-
-```bash
-# Store mapping file with standardized corpus
-python standardize_syriac.py corpus.vert corpus_standardized.vert mapping.json
-```
-
-### 4. Batch Processing Multiple Files
-Create a batch script for consistency:
-
-```bash
-#!/bin/bash
-# standardize_corpus.sh
-for file in corpus_*.vert; do
-    echo "Standardizing $file..."
-    python standardize_syriac.py "$file"
-done
-```
-
-### 5. Validation
-After standardization, verify the output:
-- Check line count matches input
-- Verify non-Syriac text is unchanged
-- Spot-check a few lines in the standardized file
-
-```bash
-# Compare line counts
-wc -l corpus.vert corpus_standardized.vert
-```
-
-## Limitations & Notes
-
-### What These Scripts Do
-✓ Identify and cluster variant spellings
-✓ Remove formatting artifacts (Kashida)
-✓ Standardize to most-frequent variant per base
-✓ Handle East Syriac vowel systems
-✓ Preserve non-Syriac text
-
-### What These Scripts Don't Do
-✗ Manual linguistic curation (all changes based on frequency)
-✗ Handle multi-language corpora specially (but skips non-Syriac)
-✗ Modify XML metadata (only affects word text)
-✗ Provide interactive review/approval per change
-
-### Considerations
-
-1. **Frequency Assumption:** Most frequent variant ≠ most correct variant
-   - For finalized corpora, this is usually true
-   - For noisy/OCR'd texts, may need manual review
-
-2. **Diacritic Philosophy:** Scripts preserve East Syriac system
-   - No cross-system normalization (e.g., to Western Syriac)
-   - If mixing systems in one corpus, consider separate processing
-
-3. **Non-Reversible:** While mapping is available, true reversion to original isn't guaranteed
-   - Some information is lost (e.g., multiple forms → single canonical)
-   - Keep originals for reference
-
-## Troubleshooting
-
-### No output file created
-- Check input file path is absolute or relative and correct
-- Verify read permissions on input file
-- Verify write permissions in output directory
-
-### "Potential duplicate clusters: 0" after standardization
-- **Expected result!** This means standardization worked
-- The goal is to reduce clusters to 0
-
-### Large number of changes (>50%)
-- May indicate very noisy source (heavy OCR errors, mixed sources)
-- Review analysis JSON to understand patterns
-- Consider manual review of top clusters before standardizing
-
-### Out of memory
-- For files >10 GB, consider splitting into smaller chunks
-- Or process on a machine with more RAM
-
-## Examples
-
-### Example 1: Analyze and Standardize a Single Corpus
-```bash
-cd syriac_standardization
-
-# Analyze
-python analyze_syriac_variants.py \
-  --input ../corpora_vert_versions/peshitta.vert \
-  --output peshitta_analysis.json
-
-# Review analysis (check duplicate count, top variants)
-
-# Standardize
-python standardize_syriac.py \
-  ../corpora_vert_versions/peshitta.vert \
-  ../corpora_vert_versions/peshitta_standardized.vert \
-  peshitta_mapping.json
-
-# Verify
-python analyze_syriac_variants.py \
-  --input ../corpora_vert_versions/peshitta_standardized.vert \
-  --output peshitta_analysis_after.json
-```
-
-### Example 2: Batch Process Multiple Corpora
-```bash
-#!/bin/bash
-cd syriac_standardization
-
-for corpus in ../corpora_vert_versions/*.vert; do
-  echo "Processing $corpus..."
-  basename=$(basename "$corpus" .vert)
-  
-  # Analyze
-  python analyze_syriac_variants.py --input "$corpus" --output "${basename}_analysis.json"
-  
-  # Standardize
-  python standardize_syriac.py "$corpus"
-  
-  echo "Done: $basename"
-done
-```
-
-## Contact & Support
-
-For issues or feature requests related to the standardization scripts, maintain these files as reference.
+**Important:** none of the four classification scripts modify
+`standardize_syriac.py`'s output or the underlying `.vert` corpus. They only
+annotate the *report* of duplicate clusters. Turning the annotations into an
+actual updated standardization pass (i.e., a `standardize_syriac.py` v2 that
+uses tier/category information instead of pure frequency) is listed as
+future work in the paper and is not yet implemented.
 
 ---
 
-**Last Updated:** 2026-07-07
-**Version:** 1.0
-**Python:** 3.6+
-**Dependencies:** None (standard library only)
+## Prerequisites
+
+- Python 3.6+, standard library only for all six scripts (no `pip install`
+  needed for any of them).
+- `matplotlib` only if you use `variant_insights.py --chart` (`pip install
+  matplotlib --break-system-packages` if missing).
+- A `.vert`-format corpus is the true starting point (see Script A below for
+  the format). Everything downstream of Script A works off the JSON it
+  produces — no script in this pipeline needs the original corpus file again
+  except Script A itself and Script B (the naive standardizer).
+
+---
+
+## A. `analyze_syriac_variants.py` — duplicate-cluster discovery
+
+**Purpose:** scan a NoSketchEngine `.vert` corpus, extract every Syriac
+token's consonantal skeleton (i.e., strip all vowel points, stress marks,
+and the kashida/tatweel justification character), and group tokens that
+share a skeleton into "duplicate clusters." This is the discovery step that
+every other script in this set — both the naive standardizer and the
+four-pass classification pipeline — is built on top of.
+
+**Input:** a `.vert` file — one token per line, with SGML-style markup for
+document/page boundaries and punctuation (`<doc ...>`, `<page no="...">`,
+`<g/>`). Non-Syriac lines (tags, punctuation-glue markers, blank lines) are
+skipped automatically; a line only counts as a token if `is_syriac()` finds
+at least one character in the Syriac Unicode block (U+0700–U+074F).
+
+**Output:** a JSON report (`--output`, or `<input_stem>_analysis.json` by
+default) with this schema:
+
+```json
+{
+  "summary": {
+    "total_unique_words": 301960,
+    "total_word_instances": 2975551,
+    "potential_duplicate_clusters": 51858
+  },
+  "duplicates": [
+    {
+      "consonantal_base": "ܡܢ",
+      "cluster_frequency": 35971,
+      "num_variants": 12,
+      "variants": [
+        {"form": "ܡ̣ܢ", "frequency": 35937, "display": "ܡ̣ܢ"},
+        {"form": "ܡ̣ـܢ", "frequency": 13, "display": "ܡ̣ـܢ"}
+      ]
+    }
+  ]
+}
+```
+`duplicates` only includes consonantal bases with **two or more** distinct
+surface forms; a base with only one attested spelling is not "candidate
+duplication" and is excluded (though it still counts toward
+`total_unique_words`/`total_word_instances`). Within each cluster,
+`variants` is sorted by frequency descending, so `variants[0]` is always the
+most common surface form of that cluster. This is exactly the file consumed
+by `variant_insights.py --input` downstream.
+
+**How the consonantal base is computed (`get_syriac_base()`):** strips a
+fixed set of ~40 Unicode combining characters — the inherited Arabic-style
+vowel points and stress marks (U+064B–U+0670: fatha, damma, kasra, shadda,
+sukun, maddah, hamza, superscript alef, etc.) and the Syriac-specific
+combining diacritics (U+0730–U+074F: the pthaha/zqapha/rbasa/hbasa/esasa
+vowel system, the feminine dot, the quššaya/rukkakha plosive/spirant
+markers, and more), plus the kashida/tatweel justification character
+(U+0640). **Note that it does *not* strip the seyame plural marker
+(U+0308, COMBINING DIAERESIS)** — that mark is deliberately left in the base,
+which is why plural and singular forms of the same noun end up in different
+clusters rather than being merged together, and why `lexical_subclass.py`
+downstream can use its presence as a plural-noun signal.
+
+**Usage:**
+```bash
+python analyze_syriac_variants.py --input corpus.vert --output corpus_analysis.json
+```
+(`--output` is optional; if omitted, the script writes
+`<input>_analysis.json` next to the input file.) Running with no arguments
+prints a usage message and exits.
+
+**Performance:** single-threaded, line-by-line streaming — no need to load
+the whole corpus into memory beyond the accumulating frequency tables. On a
+multi-million-token corpus, expect tens of seconds, not minutes.
+
+**To extend:** the set of characters stripped in `get_syriac_base()` is a
+plain Python `set` literal — if you find diacritics the script isn't
+handling (e.g. a mark used in a different NENA dialect's transliteration
+convention, or an OCR artifact character), add its Unicode code point there.
+Remember that anything you add or remove here changes what counts as "the
+same word" for every downstream script, including all four classification
+passes and the naive standardizer, so re-run the whole pipeline after
+editing it rather than patching outputs by hand.
+
+---
+
+## B. `standardize_syriac.py` — naive frequency-based standardizer ("Strategy 1")
+
+**Purpose:** the baseline this whole project exists to improve on. For every
+consonantal-base cluster with more than one surface form, pick the single
+most frequent form as canonical and rewrite every other occurrence in the
+corpus to match it. This is fast, simple, and — as the accompanying paper
+argues — linguistically unsafe for a specific, identifiable, high-frequency
+slice of clusters (closed-class morphology whose forms differ in real
+grammatical content, not just spelling). It has **no awareness** of
+dominance ratio, tiering, or grammatical paradigms; it treats every cluster
+identically.
+
+**Input:** a `.vert` corpus file (positional argument; typically the same
+file you ran `analyze_syriac_variants.py` on — this script rebuilds its own
+frequency table internally rather than reading the JSON report, so it does
+not depend on Script A having been run first).
+
+**Output:** two files (paths optional; auto-derived from the input filename
+if omitted):
+1. **Standardized `.vert` file** (`<input_stem>_standardized<ext>` by
+   default) — same line-per-token format as the input, with every kashida
+   character removed and every non-canonical variant rewritten to its
+   cluster's most frequent form.
+2. **Mapping JSON** (`<input_stem>_mapping.json` by default) — a flat
+   `{"variant_form": "canonical_form", ...}` dictionary of every rewrite
+   applied, e.g.:
+   ```json
+   {
+     "ܗ݇ܘܵܐ": "ܗܵܘܹܐ",
+     "ܠܹܐ": "ܠܵܐ"
+   }
+   ```
+   This mapping is your audit trail — keep it alongside the standardized
+   corpus. (Note: this is the naive mapping. It will contain exactly the
+   linguistically risky merges the paper identifies, e.g. collapsing the
+   NENA copula's past and participial forms into one "canonical" spelling —
+   this file is a good place to look if you want concrete before/after
+   examples of what Strategy 1 gets wrong.)
+
+**Usage:**
+```bash
+python standardize_syriac.py corpus.vert corpus_standardized.vert corpus_mapping.json
+# or, letting output paths default:
+python standardize_syriac.py corpus.vert
+```
+
+**Processing steps (for reference/debugging):** (1) build a frequency table
+by scanning the corpus once, stripping kashida from every token as it's
+counted; (2) for each consonantal-base group with >1 surface form, pick
+`max(forms, key=frequency)` as canonical and record every other form's
+mapping; (3) stream through the corpus a second time, stripping kashida and
+applying the mapping line-by-line, writing the result and printing progress
+every 100,000 lines.
+
+**Relationship to the classification pipeline:** this script and
+`variant_insights.py` (Section 1 below) both start from the same
+consonantal-base clustering logic but are **independent, parallel
+consumers** of that idea — `standardize_syriac.py` recomputes its own
+frequency table directly from the `.vert` file rather than reading
+`analyze_syriac_variants.py`'s JSON, so the two can be run in either order
+or in isolation. Nothing in Passes 0–3 modifies this script's output; they
+exist to tell you *which* of this script's rewrites (recorded in its
+mapping JSON) are trustworthy and which ones silently erase grammatical
+distinctions. There is currently no "risk-aware" version of this script
+that consults the tier/category annotations before deciding whether to
+rewrite a cluster — building one is the natural next step and is called out
+as future work in the paper.
+
+**To extend:** if you build the risk-aware v2 mentioned above, the natural
+integration point is step (2) above — instead of unconditionally picking
+`max(forms, key=frequency)` for every cluster, look up the cluster's
+`consonantal_base` in `manual_review_final2.json`'s tier/category
+annotations first, and skip (or flag instead of silently rewriting) any
+cluster that is MANUAL-tier and still has all four `*_category` fields
+`null`, or that matched `copula_or_to_be_paradigm` / `passive_or_remain_piš`
+/ `pronominal_suffix` specifically (the categories where "canonical form"
+isn't a coherent concept at all, since the variants are different
+grammatical words).
+
+---
+
+## 1. `variant_insights.py` — dominance scoring & merge-safety tiering
+
+**Purpose:** quantify how much of the corpus's apparent duplication is
+formatting noise vs. genuine diacritic variation, and flag which clusters
+are risky to canonicalize by frequency alone.
+
+**Input:** the `analyze_syriac_variants.py` report (`--input`).
+
+**Output:**
+- stdout: a JSON summary (kashida-only vs. genuine-variation split, Pareto
+  concentration, tier sizes, base-length correlation) plus a printed list of
+  the top 15 MANUAL-tier clusters.
+- `--chart <path.png>` (optional): a 4-panel PNG — variants-per-cluster
+  histogram, dominance-ratio distribution, cumulative concentration curve,
+  base-length vs. average-variant-count.
+- `--export-review <path.json>` (optional): the **full list of MANUAL-tier
+  clusters**, sorted by impact. This file is the input to
+  `grammar_crossref.py`. Each entry looks like:
+
+```json
+{
+  "consonantal_base": "ܗܘܐ",
+  "cluster_frequency": 31623,
+  "dominance": 0.563,
+  "variants": [["ܗ݇ܘܵܐ", 17797], ["ܗܵܘܹܐ", 5135], ["...", 0]]
+}
+```
+
+**Key concept — dominance ratio:**
+```
+dominance(cluster) = max(variant frequencies) / cluster_frequency
+```
+The share of a cluster's total token frequency held by its single most
+common variant. Close to 1.0 → one form overwhelmingly predominates (safe to
+canonicalize). Low (spread across several forms) → no conventionalized
+spelling to converge on, which for a high-frequency cluster is a strong
+signal of genuine morphological alternation rather than noise.
+
+**Tiering rule** (see `classify()` in the script):
+| Tier | Condition |
+|---|---|
+| `SAFE_AUTO` | kashida-only cluster, OR all non-top variants have frequency ≤3, OR dominance ≥0.85 |
+| `MANUAL` | cluster_frequency ≥50 AND dominance <0.75 |
+| `REVIEW` | everything else |
+
+**Usage:**
+```bash
+python variant_insights.py --input corpus_analysis.json \
+    --chart insights_chart.png \
+    --export-review flagged_for_manual_review.json
+```
+
+**To extend/tune:** the thresholds (`0.85`, `0.75`, cluster-frequency `50`,
+noise-tail `3`) are the four numbers most worth revisiting first if you find
+the tiers too aggressive or too conservative on a different corpus — they
+live entirely inside `classify()`.
+
+---
+
+## 2. `grammar_crossref.py` — grammatical paradigm cross-reference (Pass 1)
+
+**Purpose:** check whether a MANUAL-tier cluster's consonantal base matches
+a known NENA closed-class morphological paradigm (copula/"to be", *piš-*
+passive, pronominal suffixes, negation, numeral "one"). A match is strong
+evidence the cluster's variants are different grammatical forms, not
+spelling noise.
+
+**Input:** `flagged_for_manual_review.json` (from `variant_insights.py`).
+
+**Output:**
+- stdout: a table of category → cluster count → instance count → example
+  bases, plus the top 20 clusters that *still* don't match anything.
+- `--export <path.json>`: every input cluster, each with two new fields:
+  `grammar_category` (string or `null`) and `grammar_note` (the human-
+  readable justification for the match, or `null`).
+
+**How matching works:** `ROOT_CATEGORIES` at the top of the file is a plain
+Python list of `(category_name, [roots], explanation)` tuples. A cluster's
+`consonantal_base` matches a category if it **ends with** one of that
+category's root strings — suffix matching (not exact-equality) because
+Aramaic proclitics (`ܕ` d-, `ܘ` w-, `ܒ` b-, `ܠ` l-) attach to the *front* of
+a root, so `ܕܝܗܘܐ` ("that was") still needs to match the root `ܝܗܘܐ`. Roots
+are checked longest-first so e.g. `ܘܠܐ` is tried before the shorter `ܠܐ`.
+
+**Current categories** (see the script for the full root lists):
+`copula_or_to_be_paradigm`, `passive_or_remain_piš`, `pronominal_suffix`,
+`negation_particle`, `numeral_one`.
+
+**Usage:**
+```bash
+python grammar_crossref.py --input flagged_for_manual_review.json \
+    --export manual_review_annotated.json
+```
+
+**To extend:** add a new `(category, [roots], note)` tuple to
+`ROOT_CATEGORIES`. No other code changes needed — `_FLAT` and the matching
+loop are generated from that list automatically. Good candidates for new
+entries (see the paper's Future Work section): demonstrative gender pairs
+(masc/fem "that"), additional prepositions with pronominal suffixes, and
+aspectual particles.
+
+**Caveat:** this is a heuristic built from general NENA descriptive grammar
+(Khan 2008, 2011, 2016 — see the paper's References), not validated against
+this specific corpus's dialect by a NENA specialist. Treat matches as a
+strong prior, not ground truth.
+
+---
+
+## 3. `lexical_subclass.py` — lexical / phonetic sub-classification (Pass 2)
+
+**Purpose:** for clusters `grammar_crossref.py` couldn't explain, check for
+structural markers that indicate ordinary (non-paradigmatic) phonetic or
+dialectal variation on a regular noun/adjective/particle — lower risk than
+noise, since no tense/person/gender information is at stake, but not
+presumed identical to the "safe" grammar-paradigm case either.
+
+**Input:** `manual_review_annotated.json` (from `grammar_crossref.py`). Only
+clusters where `grammar_category` is `null` are processed; everything else
+is passed through unchanged.
+
+**Output:** `--export <path.json>` — every cluster, with two more fields
+added for previously-unclassified entries: `lexical_category` and
+`lexical_note`.
+
+**Signals used, in order:**
+1. **Seyame** (`\u0308`, the Syriac plural-marker combining diaeresis)
+   present in the base → `plural_noun_phonetic`.
+2. A short closed list (`LEXICAL_ROOTS`) of specific high-frequency items:
+   the "before/first" root family → `ordinal_before_root`; the
+   interrogatives "what"/"how" → `interrogative_particle`; the distal
+   demonstrative "that/he" → `demonstrative_pronoun`.
+3. Derivational suffix `-ܝܬܐ` (-ita) or `-ܝܐ` (-aya) → `adjectival_or_ordinal_ending`.
+
+**Usage:**
+```bash
+python lexical_subclass.py --input manual_review_annotated.json \
+    --export manual_review_final.json
+```
+
+**To extend:** add entries to `LEXICAL_ROOTS` the same way as
+`ROOT_CATEGORIES` in `grammar_crossref.py`, or add another `if
+base.endswith(...)` branch in `sub_classify()` for a new derivational
+pattern. Deliberately **not** included here: the plain feminine `-ܬܐ`
+ending (too broad/common to mix into this tier — see script 4) and proper
+nouns (need a name list, not a suffix rule — also script 4).
+
+---
+
+## 4. `name_and_feminine_subclass.py` — proper nouns & plain feminine nouns (Pass 3)
+
+**Purpose:** catch two more explainable patterns among whatever Pass 1 and
+Pass 2 still left ambiguous: (a) proper nouns/place names, where variation
+is pure transliteration/orthography choice, not grammar or lexical
+phonology; and (b) the plain Aramaic feminine `-ta` noun ending, kept as its
+**own** tier rather than folded into `adjectival_or_ordinal_ending` because
+it's a much broader, less specific pattern and deserves its own honesty
+label rather than diluting a more precise category.
+
+**Input:** `manual_review_final.json` (from `lexical_subclass.py`). Only
+clusters where both `grammar_category` and `lexical_category` are `null`
+are processed.
+
+**Output:** `--export <path.json>` — every cluster, with
+`name_or_feminine_category` and `name_or_feminine_note` added for
+newly-classified entries.
+
+**Signals used:**
+1. `PROPER_NOUN_ROOTS` — a **short seed list** (13 entries as shipped:
+   `ܝܘܚܢܢ` John, `ܐܘܪܡܝ` Urmia, `ܩܛܝܣܦܘܢ` Ctesiphon, `ܣܠܝܩ` Seleucia, `ܐܫܘܪ`
+   Ashur/Assyria, `ܐܘܪܗܝ` Edessa, `ܢܨܝܒܝܢ` Nisibis, `ܦܪܬ` Euphrates, `ܕܩܠܬ`
+   Tigris, `ܡܪܝܡ` Mary, `ܐܒܪܗܡ` Abraham, `ܡܘܫܐ` Moses, `ܕܘܝܕ` David),
+   matched exactly or with a proclitic (`ܕ`/`ܘ`/`ܒ`/`ܠ`) or the "Mar"
+   (`ܡܪܝ`) honorific prefix stripped.
+2. Base ends with plain `ܬܐ` (not `ܝܬܐ`/`ܝܐ`, which Pass 2 already
+   claimed) → `feminine_noun_ta_ending`.
+
+**Usage:**
+```bash
+python name_and_feminine_subclass.py --input manual_review_final.json \
+    --export manual_review_final2.json
+```
+
+**To extend — this is the highest-value place to add corpus-specific
+knowledge:** `PROPER_NOUN_ROOTS` is explicitly a seed list, not a gazetteer.
+If you have (or can extract, e.g. from capitalization conventions in a
+transliteration, a named-entity list, or manual annotation) an actual list
+of proper nouns attested in your corpus, drop them into this list — it is
+the single easiest lever to pull for improving coverage of the remaining
+ambiguous residual, since proper-noun variation is orthographic rather than
+linguistic and therefore comparatively low-risk to canonicalize once
+identified.
+
+**Caveat:** unlike the grammar paradigms in Pass 1, neither signal here is
+presumed "safe." An ordinary noun's spelling variants are plausible but not
+guaranteed to be mere pronunciation differences — treat both categories as
+"probably fine, worth a spot check" rather than "confirmed noise."
+
+---
+
+## Cumulative data schema
+
+After running all four scripts, each object in `manual_review_final2.json`
+has this shape (fields are additive across passes; `null` means "not
+matched at this pass"):
+
+```json
+{
+  "consonantal_base": "ܝܘܚܢܢ",
+  "cluster_frequency": 1454,
+  "dominance": 0.71,
+  "variants": [["ܝܘܼܚܲܢܵܢ", 1030], ["ܝܘܿܚܲܢܵܢ", 424]],
+  "grammar_category": null,
+  "grammar_note": null,
+  "lexical_category": null,
+  "lexical_note": null,
+  "name_or_feminine_category": "proper_noun_heuristic",
+  "name_or_feminine_note": "matches a seed proper-noun/place-name root ..."
+}
+```
+
+A cluster with all four `*_category` fields `null` is in the final
+unclassified residual — the actual candidate list for direct human
+(ideally native-speaker or NENA-specialist) review.
+
+---
+
+## End-to-end example
+
+```bash
+# Stage A: discover duplicate clusters from the raw corpus
+python analyze_syriac_variants.py \
+    --input corpus.vert \
+    --output syriac_variants_analysis.json
+
+# Stage B (optional, independent, naive baseline): frequency-canonicalize
+# everything with no risk awareness -- run this if/when you just want a
+# quick-and-dirty standardized corpus and are OK with the tradeoffs the
+# paper describes. Not required for, and not required by, Passes 0-3 below.
+python standardize_syriac.py corpus.vert corpus_standardized.vert corpus_mapping.json
+
+# Pass 0: score and tier every cluster, export the MANUAL tier
+python variant_insights.py \
+    --input syriac_variants_analysis.json \
+    --chart variant_insights_chart.png \
+    --export-review flagged_for_manual_review.json
+
+# Pass 1: grammatical paradigms
+python grammar_crossref.py \
+    --input flagged_for_manual_review.json \
+    --export manual_review_annotated.json
+
+# Pass 2: lexical/phonetic patterns
+python lexical_subclass.py \
+    --input manual_review_annotated.json \
+    --export manual_review_final.json
+
+# Pass 3: proper nouns + plain feminine nouns
+python name_and_feminine_subclass.py \
+    --input manual_review_final.json \
+    --export manual_review_final2.json
+```
+
+On the reference corpus (2,975,551 tokens / 301,960 types / 51,858
+duplicate clusters), Stage B alone collapses the type count from 301,960 to
+196,541 (−34.9%) with ~12.6% of corpus lines rewritten — but with no
+indication of which of those rewrites are safe. Passes 0–3 instead resolve:
+
+| Stage | Clusters left unresolved | Instances left unresolved |
+|---|---|---|
+| Start (MANUAL tier) | 2,192 | 656,846 (22.1% of corpus) |
+| After Pass 1 (grammar) | 2,029 | 401,450 |
+| After Pass 2 (lexical) | 1,524 | 289,117 |
+| After Pass 3 (name/feminine) | **1,355** | **254,484** |
+
+i.e. 61.3% of the highest-risk tier's token instances now have an
+identified explanation, and the final human-review workload (1,355
+clusters) is about 38x smaller than the original 51,858-cluster candidate
+list. Cross-referencing `corpus_mapping.json` (from Stage B) against
+`manual_review_final2.json`'s tier/category fields will show you exactly
+which of Stage B's rewrites fall into the risky MANUAL tier and are still
+unexplained after all three passes — those are the rewrites most worth
+manually double-checking or reverting.
+
+---
+
+## General notes for future maintainers
+
+- **Every script is read-only with respect to its input JSON** — none of
+  them overwrite the file you pass to `--input`. Always pass a new
+  `--export`/`--chart`/`--export-review` path.
+- **Order matters and is enforced by content, not by code**: each script
+  only processes clusters whose relevant category field(s) are still
+  `null`. If you re-run an earlier pass after editing it, re-run every
+  later pass afterward too so the `null` filtering stays consistent.
+- **All matching is on `consonantal_base`**, i.e. after diacritics have
+  already been stripped by `analyze_syriac_variants.py`'s
+  `get_syriac_base()`. If you change what counts as a "diacritic" upstream
+  (e.g. start stripping or keeping the seyame mark differently), every
+  downstream root list in these four scripts should be re-checked, since
+  `lexical_subclass.py`'s seyame detection in particular depends on it
+  still being present in the base.
+- **None of the four scripts require corpus access** — they operate purely
+  on the frequency-count JSON, not the original `.vert` file, so they're
+  cheap to re-run repeatedly while tuning rules.
+- **The heuristic root/suffix lists in all three cross-reference passes are
+  the intended extension point.** They are plain Python lists/tuples at the
+  top of each file specifically so they can be edited without touching the
+  matching logic. If you build a validated gold-standard evaluation set
+  (see the paper's Future Work section), the natural next step is turning
+  these heuristics into something measurable (precision/recall per
+  category) rather than coverage-only percentages.
