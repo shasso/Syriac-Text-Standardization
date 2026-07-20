@@ -31,37 +31,49 @@ this README is the operational/maintenance companion to that paper.
 
 ## Where this fits in the larger workflow
 
+```mermaid
+flowchart TD
+    RAW(["raw_corpus.vert"]) --> SA["Stage A<br/>analyze_syriac_variants.py"]
+    SA --> ANALYSIS[("syriac_variants_analysis.json")]
+
+    subgraph BASELINE["Naive baseline (independent branch)"]
+        SB["Stage B<br/>standardize_syriac.py"]
+        SBOUT(["corpus_standardized.vert<br/>+ corpus_mapping.json"])
+        SB --> SBOUT
+    end
+
+    subgraph CLASSIFY["Risk-aware classification pipeline"]
+        direction TB
+        P0["Pass 0<br/>variant_insights.py"]
+        P0OUT[("flagged_for_manual_review.json<br/>(MANUAL tier only)")]
+        P1["Pass 1<br/>grammar_crossref.py"]
+        P1OUT[("manual_review_annotated.json")]
+        P2["Pass 2<br/>lexical_subclass.py"]
+        P2OUT[("manual_review_final.json")]
+        P3["Pass 3<br/>name_and_feminine_subclass.py"]
+        P3OUT[("manual_review_final2.json")]
+
+        P0 --> P0OUT --> P1 --> P1OUT --> P2 --> P2OUT --> P3 --> P3OUT
+    end
+
+    ANALYSIS --> SB
+    ANALYSIS --> P0
+
+    SC["Stage C<br/>standardize_syriac_v2.py<br/>(risk-aware standardizer)"]
+    ANALYSIS --> SC
+    P3OUT --> SC
+    SC --> SCOUT(["corpus_standardized_v2.vert<br/>+ mapping_v2.json<br/>+ decisions_v2.json"])
+
+    classDef script fill:#e8e3f5,stroke:#8172b2,stroke-width:1px,color:#222;
+    classDef artifact fill:#eef3ea,stroke:#55a868,stroke-width:1px,color:#222;
+    classDef output fill:#fbe9e7,stroke:#c44e52,stroke-width:1px,color:#222;
+
+    class SA,SB,P0,P1,P2,P3,SC script;
+    class ANALYSIS,P0OUT,P1OUT,P2OUT,P3OUT artifact;
+    class SBOUT,SCOUT output;
 ```
-raw_corpus.vert  (NoSketchEngine format)
-        │
-        ▼
-analyze_syriac_variants.py        ── Stage A: find duplicate clusters
-        │  produces: <corpus>_analysis.json
-        ├───────────────────────────┬────────────────────────────────────┐
-        ▼                           ▼                                    │
-standardize_syriac.py      variant_insights.py       ── Pass 0: dominance │
-── Stage B (naive baseline):    │                        scoring + tiering│
-   frequency-canonicalize        │  produces:                            │
-   everything, no risk           │  flagged_for_manual_review.json       │
-   awareness                     ▼  (MANUAL tier only)                  │
-                          grammar_crossref.py            ── Pass 1       │
-                                  │  produces:                            │
-                                  │  manual_review_annotated.json         │
-                                  ▼                                       │
-                          lexical_subclass.py             ── Pass 2       │
-                                  │  produces:                            │
-                                  │  manual_review_final.json             │
-                                  ▼                                       │
-                          name_and_feminine_subclass.py   ── Pass 3       │
-                                  │  produces:                            │
-                                  │  manual_review_final2.json            │
-                                  ▼                                       │
-                          standardize_syriac_v2.py  ◄─────────────────────┘
-                          ── Stage C (risk-aware standardizer): reads
-                             BOTH the Stage A analysis JSON and the Pass 3
-                             output, merges what's safe, skips what isn't,
-                             and writes a full per-cluster decision log
-```
+
+*(Rendered automatically on GitHub, GitLab, and most Markdown viewers with Mermaid support. If your viewer doesn't render Mermaid, paste the block into https://mermaid.live to see it.)*
 
 `analyze_syriac_variants.py` is the shared starting point for every other
 script. `standardize_syriac.py` (Stage B) and the classification pipeline
